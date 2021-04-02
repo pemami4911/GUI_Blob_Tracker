@@ -3,6 +3,8 @@
 
 import cv2
 import numpy as np
+import matplotlib
+matplotlib.use('TkAgg')
 import matplotlib.pyplot as plt
 import pyforms
 from numpy import dot
@@ -12,7 +14,7 @@ from pyforms.controls import ControlButton, ControlText, ControlSlider, \
 from scipy.spatial.distance import squareform, pdist
 
 from helpers.functions import get_log_kernel, inv, linear_sum_assignment, \
-    local_maxima, select_frames
+    local_maxima, select_frames, local_maxima_blobs, blob_detect
 from helpers.video_window import VideoWindow
 
 
@@ -104,7 +106,7 @@ class MultipleBlobDetection(BaseWidget):
         self._runbutton.value = self.__run_event
         # Define the event called before showing the image in the player
         self._player.process_frame_event = self.__process_frame
-
+        
         self._error_massages = {}
 
         # Define the organization of the Form Controls
@@ -121,6 +123,10 @@ class MultipleBlobDetection(BaseWidget):
             '_player'
         ]
         self.is_roi_set = False
+        
+        self.max_num_objects = 75000
+        self.blob_detector = blob_detect()
+
 
     def _parameters_check(self):
         self._error_massages = {}
@@ -219,7 +225,8 @@ class MultipleBlobDetection(BaseWidget):
             frame = cv2.filter2D(frame, cv2.CV_32F, log_kernel)
             frame *= 255
             # remove near 0 floats
-            frame[frame < 0] = 0
+            frame[frame < 1e-5] = 0
+            frame = frame.astype('uint8')
         return frame
 
     def __roi(self, frame):
@@ -298,7 +305,7 @@ class MultipleBlobDetection(BaseWidget):
         Q = np.diag([100, 100, 10, 10, 1, 1])  # model covariance matrix
 
         # create state vectors, max number of states - as much as frames
-        x = np.zeros((stop_frame, 6))
+        x = np.zeros((self.max_num_objects, 6))
         # state initialization - initial state is equal to measurements
         m = 0
         try:
@@ -338,6 +345,7 @@ class MultipleBlobDetection(BaseWidget):
 
         self._progress_bar.label = '3/4: Generating position estimates..'
         self._progress_bar.value = 0
+        print('3/4: Generating position estimates...')
 
         # kalman filter loop
         for frame in range(stop_frame):
@@ -459,16 +467,23 @@ class MultipleBlobDetection(BaseWidget):
                     new_index.append(i)
             new_detection.append([measurements[new_index[i]]
                                   for i in range(len(new_index))])
+            x_max = x.shape[0]
             # for every detections in the last frame
-            for i in range(len(new_detection[len(new_detection) - 1])):
+            for i in range(len(new_detection[frame])):
                 # add new estimate only if it's near nozzles
                 # TODO: make it possible to choose where to add new estimates
-                if new_detection[frame][i] and \
-                                new_detection[frame][i][0] > 380:
-
+                #if new_detection[frame][i] and \
+                #                new_detection[frame][i][0] > 380:
+                
+                try:
                     x[est_number, ::] = [new_detection[frame][i][0],
                                          new_detection[frame][i][1], 0, 0, 0, 0]
                     est_number += 1
+                    if est_number == x_max:
+                        break
+                except IndexError:
+                    import pdb; pdb.set_trace()
+                    print('h')
                     # print('state added', est_number)
                     # print('new posterior\n', x[0:est_number, 0:2])
             ##################################################################
@@ -593,6 +608,7 @@ class MultipleBlobDetection(BaseWidget):
             bin_frames = []
             # preprocess image loop
             self._progress_bar.label = '1/4: Creating BW frames..'
+            print('1/4: Creating BW frames...')
             self._progress_bar.value = 0
             for frame in vid_fragment:
                 gray_frame = self.__color_channel(frame)
@@ -613,13 +629,14 @@ class MultipleBlobDetection(BaseWidget):
             i = 0
             maxima_points = []
             # gather measurements loop
-
+            
             self._progress_bar.label = '2/4: Finding local maximas..'
             self._progress_bar.value = 0
+            print('2/4: Finding local maxima...')
             for frame in bin_frames:
                 frame = self.__morphological(frame)
                 # get local maximas of filtered image per frame
-                maxima_points.append(local_maxima(frame))
+                maxima_points.append(local_maxima_blobs(frame, self.blob_detector))
                 self._progress_bar.value = 100 * (i / len(bin_frames))
                 i += 1
 
@@ -628,16 +645,21 @@ class MultipleBlobDetection(BaseWidget):
                                                     stop_frame,
                                                     vid_fragment)
             print('\nFinal estimates number:', est_number)
-            cv2.namedWindow(winname='frame', flags=cv2.WINDOW_KEEPRATIO)
+            fourcc = cv2.VideoWriter_fourcc(*'MJPG')
+            out_vid = cv2.VideoWriter('blob.avi', fourcc, 20, (1280, 720))
+            
+            #cv2.namedWindow(winname='frame', flags=cv2.WINDOW_KEEPRATIO)
             cap = cv2.VideoCapture(self._videofile.value)
+            outfile = open(self._outputfile.value, 'w')
+            outfile.write('frame,ID,x,y\n')
 
             frame_number = 0
             while cap.isOpened():
                 ret, frame = cap.read()
                 # mark detections on the frame - blue dots
                 for pos_index in range(len(maxima_points[frame_number])):
-                    tmp_x = maxima_points[frame_number][pos_index][0]
-                    tmp_y = maxima_points[frame_number][pos_index][1]
+                    tmp_x = int(maxima_points[frame_number][pos_index][0])
+                    tmp_y = int(maxima_points[frame_number][pos_index][1])
                     cv2.circle(frame, (tmp_x, tmp_y), 2, (255, 0, 0), -1)
 
                 # for estimates
@@ -646,12 +668,15 @@ class MultipleBlobDetection(BaseWidget):
                         try:
                             tmp_x = int(list(filter(lambda x: x['frame'] == frame_number, x_est[est]))[0]['x_position'])
                             tmp_y = int(list(filter(lambda y: y['frame'] == frame_number, y_est[est]))[0]['y_position'])
+                            float_x = list(filter(lambda x: x['frame'] == frame_number, x_est[est]))[0]['x_position']
+                            float_y = list(filter(lambda y: y['frame'] == frame_number, y_est[est]))[0]['y_position']
                             # mark estimates on the frame - red dots
                             cv2.circle(frame, (tmp_x, tmp_y), 2, (0, 0, 255), -1)
                             cv2.putText(frame, str(est),
                                         (tmp_x + 5, tmp_y - 5),
                                         cv2.FONT_HERSHEY_SIMPLEX, 0.5,
                                         (0, 0, 255), 1, cv2.LINE_AA)
+                            outfile.write('{},{},{},{}\n'.format(frame_number, est, float_x, float_y))
                         except IndexError:
                             pass
                 # draw frame counter
@@ -661,20 +686,25 @@ class MultipleBlobDetection(BaseWidget):
                                 cv2.FONT_HERSHEY_COMPLEX, 0.3, (255, 255, 255),
                                 1, cv2.LINE_AA)
 
-                cv2.imshow(winname='frame', mat=frame)
+                #cv2.imshow(winname='frame', mat=frame)
+                out_vid.write(frame)
                 frame_number += 1
+                #if cv2.waitKey(100) & 0xFF == ord('q') or \
+                #        frame_number >= int(self._stop_frame.value):
+                #    break
                 if cv2.waitKey(100) & 0xFF == ord('q') or \
-                        frame_number >= int(self._stop_frame.value):
+                        frame_number == len(maxima_points):
                     break
 
             cap.release()
+            out_vid.release()
             cv2.destroyAllWindows()
-            self._plot_points(vid_fragment, maxima_points, x_est,
-                              y_est, est_number)
+            #self._plot_points(vid_fragment, maxima_points, x_est,
+            #                  y_est, est_number)
             # except IndexError:
             #     self._progress_bar.label += ' ' + 'ERROR while generating estimates. ' \
             #                                       'Try adjusting parameters.'
-
+            outfile.close()
         else:
             self._progress_bar.label = 'WRONG PARAMETERS:'
             for key in self._error_massages:

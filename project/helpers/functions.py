@@ -124,7 +124,7 @@ def read_image(path, name, ext, amount):
     return images
 
 
-def blob_detect(img_with_blobs):
+def blob_detect():
     params = cv2.SimpleBlobDetector_Params()
     # # Change thresholds
     # params.minThreshold = 10
@@ -150,15 +150,16 @@ def blob_detect(img_with_blobs):
     detector = cv2.SimpleBlobDetector_create(params)
 
     # get positions of blobs
-    keypoints = detector.detect(img_with_blobs)
+    #keypoints = detector.detect(img_with_blobs)
 
     # Draw detected blobs as red circles.
     # cv2.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS ensures the size of the
     # circle corresponds to the size of blob
-    im_with_keypoints = cv2.drawKeypoints(img_with_blobs, keypoints,
-                                          np.array([]), (0, 0, 255),
-                                          cv2.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS)
-    return im_with_keypoints
+    #im_with_keypoints = cv2.drawKeypoints(img_with_blobs, keypoints,
+    #                                      np.array([]), (0, 0, 255),
+    #                                      cv2.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS)
+    #return im_with_keypoints
+    return detector
 
 
 def get_log_kernel(siz, std):
@@ -189,6 +190,13 @@ def img_inv(img):
     """
     return cv2.bitwise_not(img)
 
+
+def local_maxima_blobs(gray_image, blob_detector):
+    keypoints = blob_detector.detect(gray_image)
+    results = []
+    for k in keypoints:
+        results += [(k.pt[0], k.pt[1])]
+    return results
 
 def local_maxima(gray_image):
     """

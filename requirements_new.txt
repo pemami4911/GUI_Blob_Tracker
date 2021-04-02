@@ -8,7 +8,6 @@ macholib==1.9
 matplotlib==2.2.2
 numpy==1.14.3
 pefile==2017.11.5
-pkg-resources==0.0.0
 PyForms==3.0.0
 PyInstaller==3.3.1
 PyOpenGL==3.1.0
